@@ -5,20 +5,13 @@ import { BloomFilter } from "bloom-filters";
 import { WatchedAddress } from "./models/WatchedAddress";
 import Queue from "bull";
 import { BlockState } from "./models/BlockState";
-
-// Initialize TronWeb
-export const tronWeb = new TronWeb({
-  fullHost: "https://api.trongrid.io",
-});
+import { tronWeb } from "./shared";
 
 // Initialize Redis connection for Bull
 const REDIS_URL = "redis://127.0.0.1:6379"; // Replace with your Redis URL
 
 export const transactionQueue = new Queue("transactionQueue", REDIS_URL);
 
-// Bloom filter and exact address set
-export let bloom: BloomFilter;
-export let exactAddressSet: Set<string>;
 let lastBlockNumber: number;
 
 const MONGODB_URI = "mongodb://localhost:27017/tron-monitor";
@@ -27,7 +20,6 @@ mongoose
   .connect(MONGODB_URI)
   .then(async () => {
     console.log("Connected to MongoDB");
-    await loadWatchedAddresses();
     await loadLastBlockNumber();
     startMonitoring(); // Start monitoring after loading addresses
   })
@@ -51,29 +43,19 @@ const loadLastBlockNumber = async () => {
   }
 };
 
-const loadWatchedAddresses = async () => {
-  const watchedAddresses = await WatchedAddress.find().lean();
-  const addresses = watchedAddresses.map((doc) => doc.address);
-
-  // Calculate Bloom Filter parameters
-  const n = addresses.length || 1;
-  const p = 0.01;
-  const m = Math.ceil((-n * Math.log(p)) / Math.log(2) ** 2);
-  const k = Math.ceil((m / n) * Math.log(2));
-
-  // Initialize Bloom Filter
-  bloom = new BloomFilter(m, k);
-  addresses.forEach((address) => {
-    bloom.add(address);
-  });
-
-  exactAddressSet = new Set<string>(addresses);
-};
-
 const pollNewBlocks = async () => {
   try {
+    let totalPendingQueue = await transactionQueue.count();
+    if (totalPendingQueue > 10000) {
+      console.warn(
+        "Maximum Pending Queue reached. Wait before processing new queue"
+      );
+      return;
+    }
     const currentBlock = await tronWeb.trx.getCurrentBlock();
     const currentBlockNumber = currentBlock.block_header.raw_data.number;
+
+    console.log({ currentBlockNumber, lastBlockNumber });
 
     if (currentBlockNumber > lastBlockNumber) {
       for (
@@ -81,8 +63,21 @@ const pollNewBlocks = async () => {
         blockNumber <= currentBlockNumber;
         blockNumber++
       ) {
+        let totalPendingQueue = await transactionQueue.count();
+        if (totalPendingQueue > 10000) {
+          console.warn(
+            "Maximum Pending Queue reached. Wait before processing new queue"
+          );
+          return;
+        }
         console.log(`Processing block: ${blockNumber}`);
         await processBlock(blockNumber);
+
+        console.log({
+          prcessed: blockNumber,
+          currentBlockNumber,
+          totalPendingQueue,
+        });
 
         lastBlockNumber = blockNumber;
         await updateLastBlockNumber(blockNumber);
@@ -121,8 +116,8 @@ const processBlock = async (blockNumber: number) => {
 
 const startMonitoring = () => {
   console.log("Starting Tron monitoring service...");
-  setInterval(pollNewBlocks, 3000);
+  (async function scheduleNext() {
+    await pollNewBlocks();
+    setTimeout(scheduleNext, 3000); // Adjust the delay as needed
+  })();
 };
-
-// Start the transaction processor worker
-import "./workers/transactionProcessor";

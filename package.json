@@ -4,7 +4,8 @@
   "main": "index.js",
   "license": "MIT",
   "scripts": {
-    "monitor": "ts-node src/monitor.ts"
+    "monitor": "ts-node src/monitor.ts",
+    "start:worker": "ts-node src/workers/transactionProcessor.ts"
   },
   "dependencies": {
     "bloom-filters": "^3.0.2",
